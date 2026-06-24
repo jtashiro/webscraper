@@ -43,7 +43,19 @@ def parse_args():
         action='store_true',
         help='Pause and wait for manual CAPTCHA/bot-protection handling before starting automation.'
     )
+    parser.add_argument(
+        '--url-file',
+        type=str,
+        default=None,
+        help='Path to a file with one target gallery URL per line; processed sequentially, reusing one browser instance.'
+    )
     return parser.parse_args()
+
+
+def read_urls_from_file(path: str) -> List[str]:
+    """Reads target URLs from a file, one per line, ignoring blank lines and '#' comments."""
+    with open(path, 'r', encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
 
 
 def make_save_folder(target_url: str) -> str:
@@ -241,111 +253,126 @@ def test_next_navigation(driver: webdriver.Chrome, start_url: str) -> None:
         time.sleep(random.uniform(1, 2))
 
 
-def run_scraper(target_url: str, test_next: bool = False, captcha_wait: bool = False) -> None:
-    """Main orchestrator."""
+def scrape_gallery(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    target_url: str,
+    test_next: bool = False,
+    captcha_wait: bool = False
+) -> None:
+    """Scrapes a single gallery URL (and its pagination) using an already-initialized driver."""
     save_folder = make_save_folder(target_url)
     os.makedirs(save_folder, exist_ok=True)
     print(f"💾 Save folder: '{save_folder}/'")
 
+    print(f"\nTarget URL: {target_url}")
+    print(f"Navigating to gallery...")
+    driver.get(target_url)
+    time.sleep(2)
+
+    if captcha_wait:
+        print("\n" + "="*60)
+        print("🤖 BOT PROTECTION: Please handle any CAPTCHAs in the browser.")
+        print("   Once the gallery is loaded and visible, press [ENTER].")
+        print("="*60)
+        input("Press [ENTER] to start automation...")
+
+    if test_next:
+        test_next_navigation(driver, target_url)
+        return
+
+    # Sync cookies from Brave to requests session
+    session = requests.Session()
+    for cookie in driver.get_cookies():
+        session.cookies.set(cookie['name'], cookie['value'])
+    print("✅ Session cookies synchronized.")
+
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+    })
+
+    total_count = 0
+    page_num = 0
+    current_gallery_url = target_url
+
+    while True:
+        page_num += 1
+        print(f"\n{'='*60}")
+        print(f"📄 Gallery page {page_num}: {current_gallery_url}")
+        print(f"{'='*60}")
+
+        driver.get(current_gallery_url)
+        time.sleep(2)
+        scroll_to_bottom(driver)
+
+        photo_url_list = get_photo_urls(driver, current_gallery_url)
+
+        if not photo_url_list:
+            print("No photo links found on this page. Stopping.")
+            break
+
+        page_count = 0
+        for i, (url, filename) in enumerate(photo_url_list):
+            try:
+                print(f"\n[{i+1}/{len(photo_url_list)}] Visiting: {url}")
+                print(f"   📝 Filename: {filename}")
+                driver.get(url)
+
+                sleep_time = random.uniform(.5, 2)
+                print(f"   Waiting {sleep_time:.2f}s...")
+                time.sleep(sleep_time)
+
+                primary_image = wait.until(EC.presence_of_element_located((
+                    By.XPATH, XPATH_IMAGE
+                )))
+                img_src = primary_image.get_attribute('src')
+                print(f"   🖼️  Image URL: {img_src}")
+
+                if not img_src:
+                    print("   ⚠️  No src found, skipping.")
+                    continue
+
+                if download_single_image(session, img_src, save_folder, filename, url):
+                    page_count += 1
+
+            except Exception as e:
+                print(f"   ⚠️  Error on {url}: {e}")
+                continue
+
+        total_count += page_count
+        print(f"\n📊 Page {page_num}: {page_count} downloaded ({total_count} total).")
+
+        # Find next gallery page
+        driver.get(current_gallery_url)
+        time.sleep(2)
+
+        next_url = get_next_url(driver, current_gallery_url)
+        if not next_url:
+            print("\n✅ All pages complete.")
+            break
+
+        current_gallery_url = next_url
+        print(f"\n➡️  Next page: {current_gallery_url}")
+        time.sleep(random.uniform(1, 3))
+
+    print(f"\n✨ Done! Downloaded {total_count} images to '{save_folder}/'")
+
+
+def run_scraper(target_urls: List[str], test_next: bool = False, captcha_wait: bool = False) -> None:
+    """Main orchestrator: processes one or more gallery URLs sequentially, reusing a single browser instance."""
     driver = setup_driver(BRAVE_PATH)
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
     try:
-        print(f"\nTarget URL: {target_url}")
-        print(f"Navigating to gallery...")
-        driver.get(target_url)
-        time.sleep(2)
-
-        if captcha_wait:
-            print("\n" + "="*60)
-            print("🤖 BOT PROTECTION: Please handle any CAPTCHAs in the browser.")
-            print("   Once the gallery is loaded and visible, press [ENTER].")
-            print("="*60)
-            input("Press [ENTER] to start automation...")
-
-        if test_next:
-            test_next_navigation(driver, target_url)
-            return
-
-        # Sync cookies from Brave to requests session
-        session = requests.Session()
-        for cookie in driver.get_cookies():
-            session.cookies.set(cookie['name'], cookie['value'])
-        print("✅ Session cookies synchronized.")
-
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
-        })
-
-        total_count = 0
-        page_num = 0
-        current_gallery_url = target_url
-
-        while True:
-            page_num += 1
-            print(f"\n{'='*60}")
-            print(f"📄 Gallery page {page_num}: {current_gallery_url}")
-            print(f"{'='*60}")
-
-            driver.get(current_gallery_url)
-            time.sleep(2)
-            scroll_to_bottom(driver)
-
-            photo_url_list = get_photo_urls(driver, current_gallery_url)
-
-            if not photo_url_list:
-                print("No photo links found on this page. Stopping.")
-                break
-
-            page_count = 0
-            for i, (url, filename) in enumerate(photo_url_list):
-                try:
-                    print(f"\n[{i+1}/{len(photo_url_list)}] Visiting: {url}")
-                    print(f"   📝 Filename: {filename}")
-                    driver.get(url)
-
-                    sleep_time = random.uniform(2, 5)
-                    print(f"   Waiting {sleep_time:.2f}s...")
-                    time.sleep(sleep_time)
-
-                    primary_image = wait.until(EC.presence_of_element_located((
-                        By.XPATH, XPATH_IMAGE
-                    )))
-                    img_src = primary_image.get_attribute('src')
-                    print(f"   🖼️  Image URL: {img_src}")
-
-                    if not img_src:
-                        print("   ⚠️  No src found, skipping.")
-                        continue
-
-                    if download_single_image(session, img_src, save_folder, filename, url):
-                        page_count += 1
-
-                except Exception as e:
-                    print(f"   ⚠️  Error on {url}: {e}")
-                    continue
-
-            total_count += page_count
-            print(f"\n📊 Page {page_num}: {page_count} downloaded ({total_count} total).")
-
-            # Find next gallery page
-            driver.get(current_gallery_url)
-            time.sleep(2)
-
-            next_url = get_next_url(driver, current_gallery_url)
-            if not next_url:
-                print("\n✅ All pages complete.")
-                break
-
-            current_gallery_url = next_url
-            print(f"\n➡️  Next page: {current_gallery_url}")
-            time.sleep(random.uniform(1, 3))
-
-        print(f"\n✨ Done! Downloaded {total_count} images to '{save_folder}/'")
-
-    except Exception as err:
-        print(f"\n❌ Fatal error: {err}")
-        raise
+        for i, target_url in enumerate(target_urls):
+            print(f"\n{'#'*60}")
+            print(f"# Target {i+1}/{len(target_urls)}: {target_url}")
+            print(f"{'#'*60}")
+            try:
+                scrape_gallery(driver, wait, target_url, test_next=test_next, captcha_wait=captcha_wait and i == 0)
+            except Exception as err:
+                print(f"\n❌ Error processing {target_url}: {err}")
+                continue
 
     finally:
         print("Closing browser...")
@@ -354,9 +381,15 @@ def run_scraper(target_url: str, test_next: bool = False, captcha_wait: bool = F
 
 if __name__ == "__main__":
     args = parse_args()
-    target_url = args.target_url if args.target_url else DEFAULT_TARGET_URL
-    if args.target_url:
-        print(f"Using --target-url: {target_url}")
+
+    if args.url_file:
+        target_urls = read_urls_from_file(args.url_file)
+        print(f"Using --url-file: {args.url_file} ({len(target_urls)} URLs)")
+    elif args.target_url:
+        target_urls = [args.target_url]
+        print(f"Using --target-url: {args.target_url}")
     else:
-        print(f"Using default URL: {target_url}")
-    run_scraper(target_url=target_url, test_next=args.test_next_navigation, captcha_wait=args.captcha_wait)
+        target_urls = [DEFAULT_TARGET_URL]
+        print(f"Using default URL: {DEFAULT_TARGET_URL}")
+
+    run_scraper(target_urls=target_urls, test_next=args.test_next_navigation, captcha_wait=args.captcha_wait)

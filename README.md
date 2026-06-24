@@ -7,7 +7,7 @@ The browser (Selenium + Brave) is used to load pages, pass any bot-protection ch
 ## Files
 
 - **imagefap-scraper.py** — The scraper. CLI-driven, paginates through gallery pages automatically, sanitizes filenames, skips files already downloaded, and validates downloaded content (rejects non-image responses and truncated/error-page downloads).
-
+- **\*.txt** (e.g. `cuffs.txt`, `pierced and chastity.txt`) — Plain lists of gallery URLs, one per line; pass any of them to `--url-file` to process them all in one run.
 
 ## Requirements
 
@@ -25,14 +25,15 @@ pip install selenium requests
 ## Usage
 
 ```bash
-python3 imagefap-scraper.py [--target-url URL] [--test-next-navigation] [--captcha-wait]
+python3 imagefap-scraper.py [--target-url URL] [--url-file FILE] [--test-next-navigation] [--captcha-wait]
 ```
 
 - `--target-url` — Gallery URL to scrape. Defaults to the URL hardcoded in `DEFAULT_TARGET_URL`.
+- `--url-file` — Path to a text file with one gallery URL per line (blank lines and `#`-comments ignored, e.g. `cuffs.txt`). All URLs are processed sequentially, reusing a single browser instance instead of relaunching one per gallery. Takes precedence over `--target-url`.
 - `--test-next-navigation` — Dry run: walks through all gallery pages via the "next" link and reports photo/filename counts per page, without downloading anything.
-- `--captcha-wait` — Pause after the initial page load and wait for `[ENTER]` before continuing, so you can manually solve a CAPTCHA or other bot-protection challenge in the browser window. Omit this flag to run unattended on sites that don't challenge you.
+- `--captcha-wait` — Pause after each gallery's initial page load and wait for `[ENTER]` before continuing, so you can manually solve a CAPTCHA or other bot-protection challenge in the browser window. Omit this flag to run unattended on sites that don't challenge you.
 
-Downloaded images are saved to a folder named after the gallery URL's path (e.g. a gallery at `.../pictures/5151100/My%20Gallery` saves to `My Gallery/`).
+Downloaded images are saved to a folder named after each gallery URL's path (e.g. a gallery at `.../pictures/5151100/My%20Gallery` saves to `My Gallery/`).
 
 ## Notes
 
