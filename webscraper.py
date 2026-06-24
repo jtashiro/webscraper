@@ -31,12 +31,17 @@ def parse_args():
         '--target-url',
         type=str,
         default=None,
-        help=f'Gallery URL to scrape (default: {DEFAULT_TARGET_URL})'
+        help=f"Gallery URL to scrape (default: {DEFAULT_TARGET_URL.replace('%', '%%')})"
     )
     parser.add_argument(
         '--test-next-navigation',
         action='store_true',
         help='Skip downloads and just test next page navigation.'
+    )
+    parser.add_argument(
+        '--captcha-wait',
+        action='store_true',
+        help='Pause and wait for manual CAPTCHA/bot-protection handling before starting automation.'
     )
     return parser.parse_args()
 
@@ -236,7 +241,7 @@ def test_next_navigation(driver: webdriver.Chrome, start_url: str) -> None:
         time.sleep(random.uniform(1, 2))
 
 
-def run_scraper(target_url: str, test_next: bool = False) -> None:
+def run_scraper(target_url: str, test_next: bool = False, captcha_wait: bool = False) -> None:
     """Main orchestrator."""
     save_folder = make_save_folder(target_url)
     os.makedirs(save_folder, exist_ok=True)
@@ -251,11 +256,12 @@ def run_scraper(target_url: str, test_next: bool = False) -> None:
         driver.get(target_url)
         time.sleep(2)
 
-        print("\n" + "="*60)
-        print("🤖 BOT PROTECTION: Please handle any CAPTCHAs in the browser.")
-        print("   Once the gallery is loaded and visible, press [ENTER].")
-        print("="*60)
-        input("Press [ENTER] to start automation...")
+        if captcha_wait:
+            print("\n" + "="*60)
+            print("🤖 BOT PROTECTION: Please handle any CAPTCHAs in the browser.")
+            print("   Once the gallery is loaded and visible, press [ENTER].")
+            print("="*60)
+            input("Press [ENTER] to start automation...")
 
         if test_next:
             test_next_navigation(driver, target_url)
@@ -353,4 +359,4 @@ if __name__ == "__main__":
         print(f"Using --target-url: {target_url}")
     else:
         print(f"Using default URL: {target_url}")
-    run_scraper(target_url=target_url, test_next=args.test_next_navigation)
+    run_scraper(target_url=target_url, test_next=args.test_next_navigation, captcha_wait=args.captcha_wait)
