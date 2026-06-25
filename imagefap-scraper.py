@@ -148,12 +148,10 @@ def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, s
         print(f"   First filename: '{filenames[0]}'")
         print(f"   Last filename:  '{filenames[-1]}'")
 
-    needs_disambiguation = len(filenames) >= 2 and filenames[0] == filenames[-1]
-
     paired = []
     for i, url in enumerate(urls):
         filename = filenames[i] if i < len(filenames) else f"image_{i+1:04d}.jpg"
-        if needs_disambiguation:
+        if '...' in filename:
             photo_id = names[i] if i < len(names) else None
             if photo_id:
                 filename = filename.removesuffix('...')
