@@ -132,10 +132,12 @@ def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, s
     photo_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/photo/')]")
     seen = set()
     urls = []
+    names = []
     for link in photo_links:
         href = link.get_attribute("href")
         if href and href not in seen:
             urls.append(urljoin(base_url, href))
+            names.append(link.get_attribute("name"))
             seen.add(href)
 
     i_elements = driver.find_elements(By.XPATH, "//td/font[2]/i")
@@ -146,9 +148,15 @@ def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, s
         print(f"   First filename: '{filenames[0]}'")
         print(f"   Last filename:  '{filenames[-1]}'")
 
+    needs_disambiguation = len(filenames) >= 2 and filenames[0] == filenames[-1]
+
     paired = []
     for i, url in enumerate(urls):
         filename = filenames[i] if i < len(filenames) else f"image_{i+1:04d}.jpg"
+        if needs_disambiguation:
+            photo_id = names[i] if i < len(names) else None
+            if photo_id:
+                filename = f"{filename}_{photo_id}"
         paired.append((url, filename))
 
     return paired
