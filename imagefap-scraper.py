@@ -337,6 +337,7 @@ def scrape_gallery(
             break
 
         page_count = 0
+        gallery_empty = False
         for i, (url, filename) in enumerate(photo_url_list):
             try:
                 print(f"\n[{i+1}/{len(photo_url_list)}] Visiting: {url}")
@@ -346,6 +347,11 @@ def scrape_gallery(
                 sleep_time = random.uniform(.5, 2)
                 print(f"   Waiting {sleep_time:.2f}s...")
                 time.sleep(sleep_time)
+
+                if "This gallery is empty" in driver.page_source:
+                    print("   ⚠️  'This gallery is empty.' detected — ending this gallery.")
+                    gallery_empty = True
+                    break
 
                 primary_image = wait.until(EC.presence_of_element_located((
                     By.XPATH, XPATH_IMAGE
@@ -366,6 +372,9 @@ def scrape_gallery(
 
         total_count += page_count
         print(f"\n📊 Page {page_num}: {page_count} downloaded ({total_count} total).")
+
+        if gallery_empty:
+            break
 
         # Find next gallery page
         navigate(driver, current_gallery_url)
