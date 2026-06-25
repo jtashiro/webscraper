@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 DEFAULT_TARGET_URL = "https://www.imagefap.com/pictures/5151100/Insex%20412%20-%20LiveFeed%20Drink?gid=5151100&view=2.html"
 BRAVE_PATH         = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 WAIT_TIMEOUT       = 15
+ZOOM_LEVEL         = "50%"
 # =================================================
 
 XPATH_IMAGE = '/html/body/center/table[2]/tbody/tr/td[1]/table/tbody/tr/td[1]/div/center/table[2]/tbody/tr/td/table/tbody/tr/td/center/table/tbody/tr/td/div[5]/center/div[1]/span/img'
@@ -49,13 +50,31 @@ def parse_args():
         default=None,
         help='Path to a file with one target gallery URL per line; processed sequentially, reusing one browser instance.'
     )
+    parser.add_argument(
+        '--private',
+        action='store_true',
+        help='Launch Brave in a private (incognito) window.'
+    )
     return parser.parse_args()
 
 
 def read_urls_from_file(path: str) -> List[str]:
-    """Reads target URLs from a file, one per line, ignoring blank lines and '#' comments."""
+    """Reads target URLs from a file, one per line, ignoring blank lines and '#' comments, and dropping duplicates."""
     with open(path, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+
+    seen = set()
+    urls = []
+    for url in lines:
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    duplicate_count = len(lines) - len(urls)
+    if duplicate_count:
+        print(f"   🧹 Removed {duplicate_count} duplicate URL(s) from '{path}'.")
+
+    return urls
 
 
 def make_save_folder(target_url: str) -> str:
@@ -68,7 +87,7 @@ def make_save_folder(target_url: str) -> str:
     return basename or "downloaded_images"
 
 
-def setup_driver(brave_path: str, headless: bool = False) -> webdriver.Chrome:
+def setup_driver(brave_path: str, headless: bool = False, private: bool = False) -> webdriver.Chrome:
     """Initializes ChromeDriver using Brave Browser."""
     options = Options()
     options.binary_location = brave_path
@@ -79,11 +98,19 @@ def setup_driver(brave_path: str, headless: bool = False) -> webdriver.Chrome:
     options.add_experimental_option("useAutomationExtension", False)
     if headless:
         options.add_argument("--headless")
+    if private:
+        options.add_argument("--incognito")
 
     service = Service(log_output=subprocess.DEVNULL)
     driver = webdriver.Chrome(options=options, service=service)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
+
+
+def navigate(driver: webdriver.Chrome, url: str) -> None:
+    """Navigates to a URL and re-applies the configured page zoom (lost on every fresh page load)."""
+    driver.get(url)
+    driver.execute_script(f"document.documentElement.style.zoom='{ZOOM_LEVEL}'")
 
 
 def scroll_to_bottom(driver: webdriver.Chrome) -> None:
@@ -221,7 +248,7 @@ def test_next_navigation(driver: webdriver.Chrome, start_url: str) -> None:
         print(f"{'='*60}")
         print(f"📄 Page {page_num}: {current_url}")
 
-        driver.get(current_url)
+        navigate(driver, current_url)
         time.sleep(2)
         scroll_to_bottom(driver)
 
@@ -267,7 +294,7 @@ def scrape_gallery(
 
     print(f"\nTarget URL: {target_url}")
     print(f"Navigating to gallery...")
-    driver.get(target_url)
+    navigate(driver, target_url)
     time.sleep(2)
 
     if captcha_wait:
@@ -301,7 +328,7 @@ def scrape_gallery(
         print(f"📄 Gallery page {page_num}: {current_gallery_url}")
         print(f"{'='*60}")
 
-        driver.get(current_gallery_url)
+        navigate(driver, current_gallery_url)
         time.sleep(2)
         scroll_to_bottom(driver)
 
@@ -316,7 +343,7 @@ def scrape_gallery(
             try:
                 print(f"\n[{i+1}/{len(photo_url_list)}] Visiting: {url}")
                 print(f"   📝 Filename: {filename}")
-                driver.get(url)
+                navigate(driver, url)
 
                 sleep_time = random.uniform(.5, 2)
                 print(f"   Waiting {sleep_time:.2f}s...")
@@ -343,7 +370,7 @@ def scrape_gallery(
         print(f"\n📊 Page {page_num}: {page_count} downloaded ({total_count} total).")
 
         # Find next gallery page
-        driver.get(current_gallery_url)
+        navigate(driver, current_gallery_url)
         time.sleep(2)
 
         next_url = get_next_url(driver, current_gallery_url)
@@ -358,13 +385,50 @@ def scrape_gallery(
     print(f"\n✨ Done! Downloaded {total_count} images to '{save_folder}/'")
 
 
-def run_scraper(target_urls: List[str], test_next: bool = False, captcha_wait: bool = False) -> None:
+def refresh_urls_from_file(url_file: str, target_urls: List[str], last_mtime: float | None) -> float | None:
+    """Re-reads url_file, logs whether it changed since last_mtime, and appends any new URLs to target_urls in place."""
+    print(f"🔎 Re-reading url-file '{url_file}' for appended URLs...")
+    try:
+        new_mtime = os.path.getmtime(url_file)
+    except OSError as e:
+        print(f"   ⚠️  Could not stat url-file: {e}")
+        return last_mtime
+
+    if new_mtime == last_mtime:
+        print("   ✅ url-file unchanged since last read.")
+        return last_mtime
+
+    seen = set(target_urls)
+    fresh_urls = read_urls_from_file(url_file)
+    new_entries = [u for u in fresh_urls if u not in seen]
+
+    if new_entries:
+        target_urls.extend(new_entries)
+        print(f"   📥 url-file updated since last read — added {len(new_entries)} new URL(s) to the queue.")
+    else:
+        print("   ℹ️  url-file updated since last read, but no new URLs found.")
+
+    return new_mtime
+
+
+def run_scraper(
+    target_urls: List[str],
+    test_next: bool = False,
+    captcha_wait: bool = False,
+    url_file: str | None = None,
+    private: bool = False
+) -> None:
     """Main orchestrator: processes one or more gallery URLs sequentially, reusing a single browser instance."""
-    driver = setup_driver(BRAVE_PATH)
+    driver = setup_driver(BRAVE_PATH, private=private)
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
+    target_urls = list(target_urls)
+    last_mtime = os.path.getmtime(url_file) if url_file else None
+
     try:
-        for i, target_url in enumerate(target_urls):
+        i = 0
+        while i < len(target_urls):
+            target_url = target_urls[i]
             print(f"\n{'#'*60}")
             print(f"# Target {i+1}/{len(target_urls)}: {target_url}")
             print(f"{'#'*60}")
@@ -372,7 +436,11 @@ def run_scraper(target_urls: List[str], test_next: bool = False, captcha_wait: b
                 scrape_gallery(driver, wait, target_url, test_next=test_next, captcha_wait=captcha_wait and i == 0)
             except Exception as err:
                 print(f"\n❌ Error processing {target_url}: {err}")
-                continue
+
+            if url_file:
+                last_mtime = refresh_urls_from_file(url_file, target_urls, last_mtime)
+
+            i += 1
 
     finally:
         print("Closing browser...")
@@ -392,4 +460,10 @@ if __name__ == "__main__":
         target_urls = [DEFAULT_TARGET_URL]
         print(f"Using default URL: {DEFAULT_TARGET_URL}")
 
-    run_scraper(target_urls=target_urls, test_next=args.test_next_navigation, captcha_wait=args.captcha_wait)
+    run_scraper(
+        target_urls=target_urls,
+        test_next=args.test_next_navigation,
+        captcha_wait=args.captcha_wait,
+        url_file=args.url_file,
+        private=args.private
+    )
