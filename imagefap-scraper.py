@@ -383,9 +383,19 @@ def scrape_gallery(
     print(f"\n✨ Done! Downloaded {total_count} images to '{save_folder}/'")
 
 
-def refresh_urls_from_file(url_file: str, target_urls: List[str], last_mtime: float | None) -> float | None:
-    """Re-reads url_file, logs whether it changed since last_mtime, and appends any new URLs to target_urls in place."""
-    print(f"🔎 Re-reading url-file '{url_file}' for appended URLs...")
+def refresh_urls_from_file(
+    url_file: str,
+    target_urls: List[str],
+    current_index: int,
+    last_mtime: float | None
+) -> float | None:
+    """
+    Re-reads url_file and rebuilds the not-yet-processed tail of target_urls (in place) to match
+    the file's current contents/order — picking up insertions, removals, and reordering, not just
+    appends. Already-processed entries (index <= current_index) are left untouched. De-dupes
+    against both already-processed entries and within the fresh read, preserving file order.
+    """
+    print(f"🔎 Re-reading url-file '{url_file}' for changes...")
     try:
         new_mtime = os.path.getmtime(url_file)
     except OSError as e:
@@ -396,15 +406,23 @@ def refresh_urls_from_file(url_file: str, target_urls: List[str], last_mtime: fl
         print("   ✅ url-file unchanged since last read.")
         return last_mtime
 
-    seen = set(target_urls)
-    fresh_urls = read_urls_from_file(url_file)
-    new_entries = [u for u in fresh_urls if u not in seen]
+    processed = target_urls[:current_index + 1]
+    processed_set = set(processed)
 
-    if new_entries:
-        target_urls.extend(new_entries)
-        print(f"   📥 url-file updated since last read — added {len(new_entries)} new URL(s) to the queue.")
+    fresh_urls = read_urls_from_file(url_file)
+    pending = [u for u in fresh_urls if u not in processed_set]
+
+    old_pending_set = set(target_urls[current_index + 1:])
+    new_pending_set = set(pending)
+    added = len(new_pending_set - old_pending_set)
+    removed = len(old_pending_set - new_pending_set)
+
+    target_urls[:] = processed + pending
+
+    if added or removed:
+        print(f"   📥 url-file updated — {added} URL(s) added, {removed} removed from the pending queue.")
     else:
-        print("   ℹ️  url-file updated since last read, but no new URLs found.")
+        print("   ℹ️  url-file updated, but the pending queue is unchanged.")
 
     return new_mtime
 
@@ -436,7 +454,7 @@ def run_scraper(
                 print(f"\n❌ Error processing {target_url}: {err}")
 
             if url_file:
-                last_mtime = refresh_urls_from_file(url_file, target_urls, last_mtime)
+                last_mtime = refresh_urls_from_file(url_file, target_urls, i, last_mtime)
 
             i += 1
 
