@@ -156,6 +156,7 @@ def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, s
         if needs_disambiguation:
             photo_id = names[i] if i < len(names) else None
             if photo_id:
+                filename = filename.removesuffix('...')
                 filename = f"{filename}_{photo_id}"
         paired.append((url, filename))
 
