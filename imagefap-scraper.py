@@ -105,27 +105,23 @@ def setup_driver(brave_path: str, headless: bool = False, private: bool = False)
     service = Service(log_output=subprocess.DEVNULL)
     driver = webdriver.Chrome(options=options, service=service)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": f"""
+        (function apply() {{
+            if (document.documentElement) {{
+                document.documentElement.style.zoom = '{ZOOM_LEVEL}';
+            }} else {{
+                setTimeout(apply, 0);
+            }}
+        }})();
+        """
+    })
     return driver
 
 
 def navigate(driver: webdriver.Chrome, url: str) -> None:
-    """Navigates to a URL and re-applies the configured page zoom (lost on every fresh page load)."""
+    """Navigates to a URL (zoom is applied immediately on document creation, before paint)."""
     driver.get(url)
-    driver.execute_script(f"document.documentElement.style.zoom='{ZOOM_LEVEL}'")
-
-
-def scroll_to_bottom(driver: webdriver.Chrome) -> None:
-    """Scrolls to bottom to trigger lazy loading."""
-    print("   Scrolling to load all thumbnails...")
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
-    driver.execute_script("window.scrollTo(0, 0);")
 
 
 def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, str]]:
@@ -142,12 +138,8 @@ def get_photo_urls(driver: webdriver.Chrome, base_url: str) -> List[Tuple[str, s
             urls.append(urljoin(base_url, href))
             seen.add(href)
 
-    i_elements = driver.find_elements(By.TAG_NAME, 'i')
-    filenames = [
-        el.text.strip()
-        for el in i_elements
-        if el.text.strip().lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))
-    ]
+    i_elements = driver.find_elements(By.XPATH, "//td/font[2]/i")
+    filenames = [el.text.strip() for el in i_elements if el.text.strip()]
 
     print(f"   Photos found: {len(urls)}, Filenames found: {len(filenames)}")
     if filenames:
@@ -251,12 +243,11 @@ def test_next_navigation(driver: webdriver.Chrome, start_url: str) -> None:
 
         navigate(driver, current_url)
         time.sleep(2)
-        scroll_to_bottom(driver)
 
         photo_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/photo/')]")
         i_elements = [
-            el for el in driver.find_elements(By.TAG_NAME, 'i')
-            if el.text.strip().lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))
+            el for el in driver.find_elements(By.XPATH, "//td/font[2]/i")
+            if el.text.strip()
         ]
 
         page_photos = len(photo_links)
@@ -289,10 +280,6 @@ def scrape_gallery(
     captcha_wait: bool = False
 ) -> None:
     """Scrapes a single gallery URL (and its pagination) using an already-initialized driver."""
-    save_folder = make_save_folder(target_url)
-    os.makedirs(save_folder, exist_ok=True)
-    print(f"💾 Save folder: '{save_folder}/'")
-
     print(f"\nTarget URL: {target_url}")
     print(f"Navigating to gallery...")
     navigate(driver, target_url)
@@ -308,6 +295,10 @@ def scrape_gallery(
     if test_next:
         test_next_navigation(driver, target_url)
         return
+
+    save_folder = make_save_folder(target_url)
+    os.makedirs(save_folder, exist_ok=True)
+    print(f"💾 Save folder: '{save_folder}/'")
 
     # Sync cookies from Brave to requests session
     session = requests.Session()
@@ -331,7 +322,6 @@ def scrape_gallery(
 
         navigate(driver, current_gallery_url)
         time.sleep(2)
-        scroll_to_bottom(driver)
 
         photo_url_list = get_photo_urls(driver, current_gallery_url)
 
